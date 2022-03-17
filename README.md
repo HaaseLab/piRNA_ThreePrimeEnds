@@ -1,5 +1,6 @@
 [View Haase Lab HERE](https://www.niddk.nih.gov/research-funding/at-niddk/labs-branches/laboratory-cell-molecular-biology/rna-biology-section). 
 
+<img width="1158" alt="piThree_model" src="https://user-images.githubusercontent.com/11409899/158732451-3a4466c8-61f2-4873-99e3-37ebf15c6dcd.png">
 
 
 #
