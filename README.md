@@ -26,3 +26,5 @@ __Vignette Content__
   2. Figure2: Size distribution of major and minor ends of piRNAs
   3. Figure3: Major and minor -dependent nucleotide frequencies of piRNAs
   4. Figure4: Correlation of 3` end with nucleotide context
+
+The .Rmd files are in the markdows folder. 
