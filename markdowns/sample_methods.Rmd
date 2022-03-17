@@ -1,0 +1,725 @@
+---
+title: "Untitled"
+output:
+  pdf_document: default
+  html_document: default
+---
+---
+title: "Hierarchical length and sequence preferences establish a single major piRNA 3’-end’"
+author: "methods by: Daniel Stoyko & Pavol Genzor"
+date: "12/06/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+\center
+__*Daniel Stoyko, Pavol Genzor, Astrid D. Haase*__  
+
+
+This vignette describes the computational materials & methods associated with this manuscript. Please visit [**HaaseLab/piRNA_ThreePrimeEnds github repository**](https://github.com/HaaseLab/piRNA_ThreePrimeEnds/) to download functions used in the various scripts and analyses. Please refer to the GEO data set [**GSE156058**](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE156058) associated with this study for adapter sequences and raw data. 
+The analysis in this vignette was not performed with full data sets, but only subset of the data to demonstrate the materials and methods. 
+
+
+####
+__About small RNA Libraries.__  
+Small RNA libraries were prepared and pre-processed as described in Genzor et.al., 2021. Please refer to the corresponding github page for more information. 
+
+####
+__Pre-requisites & Notes__  
+  * Acquire the raw sequencing data from your facility or GEO at NCBI
+  * NOTE: some images may not have rendered perfectly
+
+####
+__Vignette Content__  
+
+  1. Figure1: Contribution of piRNA three prime ends - End Dominance
+  2. Figure2: Size distribution of major and minor ends of piRNAs
+  3. Figure3: Major and minor -dependent nucleotide frequencies of piRNAs
+  4. Figure4: Correlation of 3` end with nucleotide context
+    
+
+
+
+##  
+__Environment setup & test data preparation__  
+
+Prepare your R working environment by ensuring you have all necessary packages installed and loaded. Download the *.RData* object from _github_ to be and load it into R before proceeding.  
+
+
+```{r load libraries, message=FALSE}
+# load libraries
+suppressWarnings(
+  suppressPackageStartupMessages({library("data.table"); library("dplyr");
+  library("ggplot2"); library("ggpubr"); library("GenomicRanges");
+  library("ggseqlogo"); library("BSgenome.Dmelanogaster.UCSC.dm6"); 
+  library("stringr"); library("parallel")}))
+```
+
+
+```{r prepare sample data, eval=FALSE, echo = FALSE}
+## SKIP: For internal use only. These scripts were used to filter previously prepare 
+## objects, and create a sample data set with 1,000,000 piRNAs to use for the purpose of this vignette. 
+## Proceed with the next chunk to load the ready object with __original.GR__  
+
+## Load data set
+load("/Users/genzorp/Documents/GITHUB/piThreePrime/sessions/Haase_S1832_9T3Bloaded.RData")
+
+## Load miRNA annotation for standard chromosomes
+source("/Users/genzorp/Documents/GITHUB/piThreePrime/r/miRbase2BED.R")
+miR.BASE.PATH <- "/Users/genzorp/Documents/GITHUB/PG_Annotations/data/
+                  Dmelanogaster/miRBase/dm6_miRBase_dme.gff3"
+miR.GR.dm6 <- makeGRangesFromDataFrame(
+  df = miRbase2BED(miRBASEFILE = miR.BASE.PATH), 
+  keep.extra.columns = TRUE)
+miR.GR.dm6 <- keepStandardChromosomes(miR.GR.dm6, pruning.mode = "coarse")
+miR.GR.dm6
+
+## Remove any piRNA that overlap with miRNA annotation
+HAASE.BREP.NAMES <- names(HAASE.S1832.BREPS.L)
+HAASE.S1832.BREPS.L <- lapply(names(HAASE.S1832.BREPS.L), function(i){
+  subsetByOverlaps(x = HAASE.S1832.BREPS.L[[i]], 
+                   ranges = miR.GR.dm6, 
+                   type = "any", 
+                   ignore.strand = FALSE, 
+                   invert = TRUE)})
+names(HAASE.S1832.BREPS.L) <- HAASE.BREP.NAMES
+
+## Select a single biological replicate
+original.GR <- HAASE.S1832.BREPS.L[[1]][1:1000000]
+
+## Clean object
+rm(list = grep("HAASE",ls(),value = TRUE))
+rm(miR.BASE.PATH, miR.GR.dm6, BAM.EXTENTION, EXTENTION, 
+   FILTER.BY.SIZE, MC.CORES, ORIGINAL.SEQUENCE, PERFECT.MATCH,
+   REMOVE.PCR.DUPLICATES,REMOVE.UMI.N, SIMPLECIGAR,SIZE.RANGE,filterBam, 
+   miRbase2BED,prepareFastq)
+
+## Save trial session
+SESSION.DIR="/Users/genzorp/Documents/GITHUB/piThreePrime/sessions/"
+save.image(file = paste0(SESSION.DIR,"single_filtered_brep_1M.RData"))
+```
+
+####  
+
+__Load filtered subset of the data__  
+
+
+```{r load data, cache=TRUE}
+SESSION.DIR="/Users/genzorp/Documents/GITHUB/LIVE/piRNA_ThreePrimeEnds/sample_data/"
+load(file = paste0(SESSION.DIR,"single_filtered_brep_1M.RData"))
+```
+
+####  
+
+__Figure 1: Contribution of piRNA three prime ends__  
+
+
+```{r Figure1-EndDominance: calculations, cache=FALSE}
+## Data
+GR <- original.GR
+
+## Make a table of uniquely mapping piRNAs
+
+uniq.DT <-  as.data.table(GR[mcols(GR)[["NH"]] %in% 1])
+
+## Create a column with 5'-end coordinates
+# NOTE: "start" refers to the 5'-end on the "+" strand and 
+# NOTE: "end" refers to 5`-end on "-" strand
+
+uniq.DT[,FivePrime := paste0(seqnames, "_", ifelse(strand == "-", end, start), "_", strand)]
+
+## Randomly assign each piRNA a value between 1 and N 
+##    :- N is the number of unique sequences sharing the 5'-end without repeating
+##    :- This random value will be used to break ties between equally abundant 3'-ends
+##    :- sample() randomly assigns numbers within particular range
+
+uniq.DT[,TieBreaker := base::sample(x = nrow(.SD), size = nrow(.SD), replace = F), 
+        by = FivePrime]
+
+## Define the Major End as the most abundant sequence per 5'-end
+##    :- use TieBreaker value to solve ties in abundance 
+
+uniq.DT <- uniq.DT[order(-MULT, TieBreaker)]
+uniq.DT[,EndOrder := c(1:nrow(.SD)), by=FivePrime]     
+uniq.DT[,EndClass := ifelse(EndOrder > 1, "MinorEnds","MajorEnd")]
+uniq.DT[["EndClass"]] <- factor(x = uniq.DT[["EndClass"]], levels = c("MinorEnds","MajorEnd"))
+
+## Group 5'-ends into custom bins based on their abundance
+##    :- NOTE: the abundance is not normalized here
+
+# summarize abundance
+uniq.DT <- setDT(uniq.DT)
+uniq.DT[,FivePrimeAbund := sum(MULT), by=FivePrime]
+
+# find bins
+aBreaks <- c(1,2,3,4,5,10,50,100,500,1000)
+uniq.DT[["aBin"]] <- findInterval(x = uniq.DT[["FivePrimeAbund"]], 
+                                  vec = aBreaks, left.open = TRUE)
+
+# add and organize bin name
+uniq.DT <- setDT(uniq.DT)
+uniq.DT[,"binName" := paste0(unique(c(min(FivePrimeAbund),max(FivePrimeAbund))),
+                             collapse = "-") , by = aBin]
+uniq.DT[FivePrimeAbund > 1000][["binName"]] <- ">1000"
+
+# order bin names
+unique(uniq.DT[["binName"]])
+binNameOrder <- c("1","2","3","4","5","6-10","11-50","51-100","101-500","501-999",">1000")
+uniq.DT[["aBin"]] <- factor(uniq.DT[["aBin"]])
+uniq.DT[["binName"]] <- factor(x = uniq.DT[["binName"]], levels = binNameOrder)
+
+## Calculate contribution of the Major 3'-end to all the ends
+uniq.DT <- setDT(uniq.DT)
+uniq.DT[,EndContribution := MULT/sum(MULT), by=FivePrime]
+
+## View the generated table
+uniq.DT[FivePrime %in% "chr2L_3107310_-"]
+
+## Prepare data for visualization
+Barplot.DT <- uniq.DT[, .(Sum_Abundance = sum(MULT)), by=c("EndClass","aBin","binName")]
+Barplot.DT
+
+NumberOfEnds.DT <- uniq.DT[, .N, by=c("FivePrime", "aBin","binName")]
+NumberOfEnds.DT
+
+MeanNumberOfEnds.DT <- NumberOfEnds.DT[, lapply(.SD,mean), by=c("aBin","binName"), .SDcols="N"]
+MeanNumberOfEnds.DT
+```
+
+
+```{r Figure1-EndDominance: plots, cache=FALSE, fig.align="center"}
+##  NOTE: Using the three tables generated in previous chunk
+#       Barplot.DT
+#       NumberOfEnds.DT
+#       MeanNumberOfEnds.DT
+
+##
+EndContributionPlot <- ggplot() + theme_pubclean() +
+  geom_bar(data = Barplot.DT, 
+           aes(x = binName, y = Sum_Abundance, alpha = EndClass, group = EndClass), 
+           stat = "identity", position = "fill", fill="#B37FC7",
+           width = 0.8) +
+  geom_boxplot(data = uniq.DT[EndClass %in% "MajorEnd"], 
+               aes(x = binName, y= EndContribution), 
+               outlier.shape = NA, width = 0.5, fill = NA) +
+  ylab("Fraction of dominant 3`ends") + xlab("") + coord_flip() +
+  scale_alpha_manual(values=c(0.1,0.8)) +
+  theme(legend.position="bottom", 
+        axis.text = element_text(family = "Helvetica",colour = "black", size = 10),
+        aspect.ratio=0.75); EndContributionPlot
+
+##
+NumberOfEndsPlot <- ggplot() + theme_pubclean() +
+  geom_boxplot(data = NumberOfEnds.DT, 
+               aes(x = binName, y = N), 
+               color="black", fill="#C49CD3",
+               outlier.shape = NA) +
+  geom_point(data = MeanNumberOfEnds.DT, 
+             aes(x= binName, y = N), 
+             shape = 16, color = "firebrick3", size = 6) +
+  ylab("number of unique 3`ends") + xlab("") +
+  ggtitle(paste0("red = mean")) + coord_flip() +
+  theme(aspect.ratio = 0.75,
+        axis.text = element_text(family = "Helvetica",colour = "black", size = 10),
+        legend.position = "none"); NumberOfEndsPlot
+```
+
+####
+
+__Figure 2: Size distribution of major and minor ends of piRNAs__  
+
+
+```{r Figure2 Size distributions, fig.align="center"}
+## NOTE: Use that table generated in the previous chunk
+##    uniq.DT
+
+## Table by end type
+MajorMinorLengths.DT <- uniq.DT[,lapply(.SD,sum), by=c("EndClass","width"), .SDcols="MULT"]
+MajorMinorLengths.DT <- MajorMinorLengths.DT[order(EndClass,width)]
+MajorMinorLengths.DT[,"groupReadSum" := sum(.SD),by="EndClass", .SDcols="MULT"]
+MajorMinorLengths.DT[,"totalReads" := sum(.SD), .SDcols="MULT"]
+MajorMinorLengths.DT[,"groupPercent" := (MULT/groupReadSum)*100]
+MajorMinorLengths.DT[,"totalPercent" := (MULT/totalReads)*100]
+MajorMinorLengths.DT
+
+
+## All reads
+AllLengths.DT <- uniq.DT[,.(MULT = sum(.SD)), by=c("width"), .SDcols="MULT"]
+AllLengths.DT[,"totalReads" := sum(.SD), .SDcols = "MULT"]
+AllLengths.DT[,"totalPercent" := (MULT/totalReads)*100]
+AllLengths.DT
+
+## Plot
+LengthDistributionPlot <- ggplot() + theme_pubclean() +
+  geom_bar(data = AllLengths.DT, 
+             aes(x=width, y=totalPercent), 
+             stat="identity", fill="gray80", width = 0.8) +
+  geom_line(data = MajorMinorLengths.DT, 
+            aes(x = width, y = groupPercent, colour = EndClass),
+            size = 1) + 
+  geom_point(data = MajorMinorLengths.DT, 
+             aes(x = width, y = groupPercent, shape = EndClass, colour = EndClass),
+             size = 4) +
+  xlab("size (nt)") + ylab("percent of piRNAs") +
+  scale_x_continuous(breaks = seq(0,40,2)) +
+  scale_y_continuous(breaks = seq(0,40,5)) +
+  scale_colour_manual(values = c("#AB72C0","#FF6D33")) +
+  theme(aspect.ratio = 1, legend.position = "top",
+        axis.text = element_text(family = "Helvetica", colour = "black", size = 10))
+
+LengthDistributionPlot
+```
+
+
+####
+
+__Figure S2: Distance between major ends in WT and PNLDC KO__  
+
+```{r FigureS2 Size distributions, eval=F}
+## NOTE: Scripts used for comparing mouse WT to PNLDC KO piRNA major ends
+## NOTE: Sample data is not provided. Data can be obtained from PRJNA421205
+## See methods for details 
+
+## Set GR1 as the WT library
+## Set GR2 as the PNLDC1 KO library
+
+GR1 <- MOUSE.BAM.GR.WT
+GR2 <- MOUSE.BAM.GR.KO
+
+## For GR1, determine the major 3'-end in same manner as described previously
+uniq.DT1 <-  as.data.table(GR1[mcols(GR1)[["NH"]] %in% 1])
+uniq.DT1[,FivePrime1 := paste0(seqnames, "_", ifelse(strand == "-", end, start), "_", strand)]
+uniq.DT1[,TieBreaker := base::sample(x = nrow(.SD), size = nrow(.SD), replace = F), 
+        by = FivePrime1]
+uniq.DT1 <- uniq.DT1[order(-MULT, TieBreaker)]
+uniq.DT1[,EndOrder := c(1:nrow(.SD)), by=FivePrime1]     
+uniq.DT1[,EndClass := ifelse(EndOrder > 1, "MinorEnds","MajorEnd")]
+
+## keep only major 3'-ends
+uniq.DT1.maj <- uniq.DT1[EndClass %in% c("MajorEnd")]
+
+## Determine 3'-end coordinate and discard unnecessary columns
+uniq.DT1.maj[,ThreePrime1 := ifelse(strand == "-", start, end)]
+uniq.DT1.maj <- uniq.DT1.maj[,c(5, 7, 8, 12)]
+colnames(uniq.DT1.maj) <- c( "strand1", "MULT1", "FivePrime1", "ThreePrime1")
+
+uniq.DT1.maj
+
+## Repeat for GR2
+uniq.DT2 <-  as.data.table(GR2[mcols(GR2)[["NH"]] %in% 1])
+uniq.DT2[,FivePrime2 := paste0(seqnames, "_", ifelse(strand == "-", end, start), "_", strand)]
+uniq.DT2[,TieBreaker := base::sample(x = nrow(.SD), size = nrow(.SD), replace = F), 
+        by = FivePrime2]
+uniq.DT2 <- uniq.DT2[order(-MULT, TieBreaker)]
+uniq.DT2[,EndOrder := c(1:nrow(.SD)), by=FivePrime2]     
+uniq.DT2[,EndClass := ifelse(EndOrder > 1, "MinorEnds","MajorEnd")]
+uniq.DT2.maj <- uniq.DT2[EndClass %in% c("MajorEnd")]
+uniq.DT2.maj[,ThreePrime2 := ifelse(strand == "-", start, end)]
+uniq.DT2.maj <- uniq.DT2.maj[,c(5, 7, 8, 12)]
+colnames(uniq.DT2.maj) <- c("strand2", "MULT2", "FivePrime2", "ThreePrime2")
+
+## Merge the two files by 5'-end coordinate 
+## Discard sequences with 5'-ends not present in both datasets
+DT.combined <- merge(uniq.DT1.maj, uniq.DT2.maj, by.x="FivePrime1", by.y="FivePrime2", all.x=F, all.y = F)
+
+## Calculate total abundance of piRNAs in a pair
+DT.combined[, MULTtotal := MULT1 + MULT2]
+
+## Determine distance between the two major 3'-ends
+DT.combined[, Distance := ifelse(strand1 == "+", ThreePrime2-ThreePrime1, ThreePrime1-ThreePrime2)]
+
+## Keep sequences where PNLDC KO piRNA is longer than the WT piRNA
+DT.combined <- DT.combined[Distance > 0]
+
+## Count number of reads for each distance
+DT.combined.sum <- DT.combined[, lapply(.SD, sum), .SDcols="MULTtotal", by="Distance"]
+
+## Convert to % of total
+DT.combined.sum$MULTtotal <- (DT.combined.sum$MULTtotal/ sum(DT.combined.sum$MULTtotal))*100
+
+## Plot
+DistancePlot <- ggplot() + theme_bw() +
+  geom_bar(data=DT.combined.sum, 
+           aes(x=Distance, y = MULTtotal), 
+           color= "black", 
+           stat="identity", 
+           width= 0.85) +
+  labs(title = "SampleData", 
+       x= "Distance between the major 3'ends in WT and PNLDC KO", 
+       y= "% of total") + 
+  theme(panel.grid = element_blank(), 
+        aspect.ratio = 1)
+  
+```
+
+
+####  
+
+__Figure 3: Major and minor -dependent nucleotide frequencies of piRNAs__  
+
+
+```{r Figure 3 Types of Ends, eval=TRUE, fig.align="center"}
+## Data
+GR <- original.GR
+
+## Use only uniquely mapping piRNAs
+uniq.GR <- GR[mcols(GR)[["NH"]] %in% "1"]
+uniq.DT <- as.data.table(uniq.GR)
+
+## Expand the GR to include surrounding nucleotides 
+uniq.GRE <- uniq.GR
+end(uniq.GRE) <- end(uniq.GRE) + 4
+start(uniq.GRE) <- start(uniq.GRE) - 4
+
+## Add sequence to the table
+uniq.DT[["seq"]] <- as.vector(getSeq(BSgenome.Dmelanogaster.UCSC.dm6, uniq.GRE))
+
+## Create a column with 5'-end coordinates
+uniq.DT <- setDT(uniq.DT)
+uniq.DT[,FivePrime := paste0(seqnames, "_", ifelse(strand == "-", end, start), "_", strand)]
+
+## Randomly assign each piRNA a value between 1 and N 
+uniq.DT[,TieBreaker := sample(nrow(.SD), size = nrow(.SD), replace = F), by = FivePrime]
+
+## Define the Major End as the most abundant sequence per 5'-end
+uniq.DT <- uniq.DT[order(-MULT, TieBreaker)]
+uniq.DT[,EndOrder := c(1:nrow(.SD)), by=FivePrime]     
+uniq.DT[,EndClass := ifelse(EndOrder > 1, "MinorEnds","MajorEnd")]
+uniq.DT[["EndClass"]] <- factor(x = uniq.DT[["EndClass"]], levels = c("MinorEnds","MajorEnd"))
+
+## Group 5'-ends into custom bins based on their abundance
+uniq.DT <- setDT(uniq.DT)
+uniq.DT[,FivePrimeAbund := sum(MULT), by=FivePrime]
+uniq.DT
+
+## View the generated table
+uniq.DT[FivePrime %in% "chr2L_3107310_-"]
+
+## Plotting LOGO
+##  1. select type of end and its sequences 
+##  2. extract sub-string
+##  3. expand to reads
+##  4. replace nucleotides
+
+ForLogo.second.DT <- uniq.DT[EndOrder %in% 2][,c("MULT", "seq")]
+ForLogo.second.DT[,Seq_Range := substring(seq, nchar(seq)-8 ,nchar(seq))]
+ForLogo.second.DT <- ForLogo.second.DT[ rep( c(1:nrow(ForLogo.second.DT)), 
+                                             times = MULT)]
+ForLogo.second.DT[["Seq_Range"]] <- gsub("T","U",ForLogo.second.DT[["Seq_Range"]])
+
+##
+## Plot LOGO
+##
+
+LogoPlot <- ggplot() + theme_pubclean() + 
+  geom_logo(data=ForLogo.second.DT[["Seq_Range"]], 
+            method="bits", seq_type="rna") + 
+  scale_y_continuous(limits = c(0,1)) +
+  scale_x_continuous(
+    breaks = 1:9,
+    labels = paste(c("n-4","n-3","n-2","n-1","n","+1","+2","+3","+4")) ) +
+  theme(panel.grid = element_blank(), 
+        axis.text = element_text(family = "Helvetica", colour = "black", size = 10),
+        aspect.ratio = 0.5); LogoPlot
+
+##
+## Plot +1 nucleotide frequency
+##
+
+
+## For barplots with +1 nucleotide composition:
+## isolate the +1 nucleotide
+
+uniq.DT[, plusOne := substring(seq, nchar(seq)-3, nchar(seq)-3)]
+PlusOneComposition.DT <- uniq.DT[, .(MULT = sum(MULT)), by=c("EndClass","plusOne")]
+PlusOneComposition.DT[["plusOne"]] <- factor(PlusOneComposition.DT[["plusOne"]], c("A","G","C","T"))
+
+## set colors
+nuc_colors <- c("#00AF54", "#FFD639", "#447EC5", "#DF2935")
+
+## plot
+PlusOneCompositionPlot <- ggplot() + theme_pubclean()+
+  geom_bar(data = PlusOneComposition.DT, 
+           aes(x = EndClass, y = MULT, fill = plusOne), 
+           stat="identity", position="fill", width = 0.8) +
+  scale_fill_manual(values=nuc_colors) +
+  ylab("fraction nucleotide") +
+  theme(aspect.ratio = 2, 
+        legend.position = "right",
+        axis.text = element_text(family = "Helvetica",colour = "black", size = 10),
+        panel.grid = element_blank()); PlusOneCompositionPlot
+```
+
+####  
+
+__Figure 4 Heatmaps: Distribution of 3`-ends relative to 5'-ends__  
+
+
+```{r Figure4 Heatmap: calculations, eval=TRUE}
+## Crate main objects
+
+GR <- original.GR
+uniq.GR <- GR[mcols(GR)[["NH"]] %in% 1]
+uniq.DT <- as.data.table(uniq.GR)
+
+## Extend the 3`-end of piRNAs so all piRNAs are 50-nt long & add sequence to the list
+
+uniq.GRE <- uniq.GR
+end(uniq.GRE[strand(uniq.GRE)=="+"]) <- start(uniq.GRE[strand(uniq.GRE)=="+"])+50
+start(uniq.GRE[strand(uniq.GRE)=="-"]) <- end(uniq.GRE[strand(uniq.GRE)=="-"])-50
+uniq.DT[["seq"]] <- as.vector(getSeq(BSgenome.Dmelanogaster.UCSC.dm6, uniq.GRE))
+
+## Set analysis range, trim reads to this range & replace T's for U's
+aRange <- c(18:32)
+uniq.DT[,seq := substring(seq, min(aRange), max(aRange))]
+uniq.DT[["seq"]] <- gsub("T", "U", uniq.DT[["seq"]])
+
+## Create a vector of sequence contexts you wish to analyze. Must be same length as range above.
+## Add any custom contexts you would like to use
+##    - shorthand symbols:
+##      N: U, C, G, or A
+##      V: C, G, or A (no U)
+##      i.e.: "NUNNNNNNNNNNNNNN" 
+##      This sequence will be used to select have a U 19-nt away from the 5'-end
+
+aContexts <- unlist(lapply(c(0: (length(aRange)-1)), function(i){
+   paste(c(rep("N", i), "U", rep("N",(length(aRange)-1)-i)), collapse="")}))
+customContexts <- c("NNNNNNNNNNNNNNN","NNNNNNVVVVVVNNN", "NNNNNNVVVVVVUNN", "NNNNNUVVVVVVNNN")
+aContexts <- c(aContexts, customContexts)
+
+
+## Calculate size distribution for all piRNAs
+## Make sure all lengths in the window of analysis are represented in the Distribution
+## Normalize by converting to fraction / percentage of total
+
+DistributionOfAll <- uniq.DT[, .(MULT = sum(MULT)), by="width"][order(width)]
+if(any(!aRange %in% DistributionOfAll[["width"]])){
+    DistributionOfAll <- bind_rows(DistributionOfAll, 
+                                   data.table(width = setdiff(aRange, DistributionOfAll[["width"]]), 
+                                              MULT = 0))}
+DistributionOfAll[,"Percent" := (MULT/sum(MULT))*100]
+
+
+## Determine the piRNA 3'-end distribution for each context
+
+a_context <- aContexts[1]
+Regex <- gsub("N", "[UCGA]", a_context)
+
+## Loop through contexts
+EndDistribution <- rbindlist(lapply(seq_along(aContexts), function(a){
+  # Start and report progress
+  message(paste0("a context: ",a))
+  a_context <- aContexts[a]
+  
+  # Convert context to regex format and simplify
+  a_regex_format <- gsub("N", "[UCGA]", a_context)
+  a_regex_format <- gsub("V", "[CGA]", a_regex_format)
+  
+  # Find sequences which match the context and determine size distribution
+  subset.DT <- uniq.DT[str_detect(seq, a_regex_format)][, .(MULT = sum(MULT)), by="width"]
+  
+  # Make sure all lengths in the total distribution are represented in the subset
+  if(any(!DistributionOfAll[["width"]] %in% subset.DT[["width"]])){
+    subset.DT <- bind_rows(subset.DT, 
+                           data.table(width = setdiff(DistributionOfAll[["width"]], 
+                                                      subset.DT[["width"]]), MULT = 0))}  
+  
+  # Make sure all lengths in the window of analysis are represented in the subset  
+  if(any(!aRange %in% subset.DT[["width"]])){
+    subset.DT <- bind_rows(subset.DT, 
+                           data.table(width = setdiff(aRange, 
+                                                      subset.DT[["width"]]), MULT = 0))}
+  
+  # order and normalize, and find deviation
+  subset.DT <- subset.DT[order(width)]
+  subset.DT[,"Percent" := (MULT/sum(MULT))*100]
+  subset.DT[,"DeviationFromNormalDistribution" := Percent - DistributionOfAll[["Percent"]]]
+
+  # Add data identifiers
+  subset.DT[["ContextNumber"]] <- a
+  subset.DT[["Seq"]] <- strsplit(a_context, "")[[1]]
+  return(subset.DT) })) 
+
+EndDistribution
+
+## only show values within your window
+EndDistribution <- EndDistribution[width %in% aRange]
+```
+
+
+```{r Figure4 Heatmap: Plots}
+##
+## Plot heatmap of contexts
+##
+
+
+HeatmapPlot <- ggplot() + theme_bw() + 
+  geom_tile(data=EndDistribution, 
+            aes(x=width, y=ContextNumber, fill=Percent), 
+            color="white", size = 0.4) + 
+  geom_text(data=EndDistribution[Seq != "N"], 
+            aes(x=width, y= ContextNumber, label=Seq, size=4)) +
+  scale_fill_gradient(low="white",high="maroon4", 
+                      limits=c(0, max(EndDistribution[["Percent"]])),
+                      name = "% of 3'-ends") +
+  xlab("Nucleotides downstream of 5'-end") + 
+  ylab("a piRNA nucleotide contexts") + 
+  scale_x_continuous(expand = c(0.000,0.0030)) +
+  scale_size_continuous(guide="none") +
+  scale_y_continuous(trans="reverse", breaks = NULL, expand = c(0,0)) +
+  coord_equal() +
+  theme(panel.background = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        axis.text.y=element_blank()); HeatmapPlot
+
+##
+## Plot Heatmap Deviation
+##
+
+HeatmapDeviationPlot <- ggplot() + theme_bw() + 
+  geom_tile(data=EndDistribution, 
+            aes(x=width, y=ContextNumber, fill=DeviationFromNormalDistribution), 
+            color="white", size = 0.4) + 
+  geom_text(data=EndDistribution[Seq != "N"], 
+            aes(x=width, y= ContextNumber, label=Seq, size=4))+
+  scale_fill_gradient2(low="navy", mid="white", high="firebrick4", 
+                       limits = c(min(EndDistribution[["DeviationFromNormalDistribution"]]), 
+                                  max(EndDistribution[["DeviationFromNormalDistribution"]]))) + 
+  xlab("Nucleotides downstream of 5'-end") + 
+  ylab("a piRNA nucleotide contexts") + 
+  scale_x_continuous(expand = c(0.000,0.0030))+
+  scale_size_continuous(guide= "none")+
+  scale_y_continuous(trans="reverse", breaks = NULL, expand = c(0,0)) + 
+  coord_equal() +
+  theme(panel.background = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        axis.text.y=element_blank()); HeatmapDeviationPlot
+```
+
+
+####  
+
+__Figure 4 Z-score: Distribution of 3`-end relative to sequence context of interest__  
+
+
+```{r Figure4 Z-score: Calculations, eval=TRUE}
+## Crate main objects
+
+GR <- original.GR
+uniq.GR <- GR[mcols(GR)[["NH"]] %in% 1]
+
+## Extend both ends of piRNAs to see sequence immediately down- and up-stream
+
+ExpandBy <- 60
+end(uniq.GR) <- end(uniq.GR)+ExpandBy
+start(uniq.GR) <- start(uniq.GR)-ExpandBy
+
+## Make sure that the extended sequences are still within the boundaries of chromosomes
+## Use the appropriate genome
+RefGen <- BSgenome::getBSgenome("BSgenome.Dmelanogaster.UCSC.dm6")
+RefGen <- GRanges(seqnames = names(RefGen), 
+                  ranges = IRanges(start = 1, 
+                                   end = GenomeInfoDb::seqlengths(RefGen)))
+uniq.GR <- IRanges::subsetByOverlaps(uniq.GR, RefGen, type = "within")
+
+## Convert to data.table and obtain sequence
+
+uniq.DT <- as.data.table(uniq.GR)
+uniq.DT[["seq"]] <- as.vector(getSeq(BSgenome.Dmelanogaster.UCSC.dm6, uniq.GR))
+
+## Select the range of analysis, must be less than what the original sequence were expanded by (60)
+Range  <- 51
+
+## Select sequence context to analyze
+## Add any custom contexts you would like to use
+##    - use shorthands such as V = C, G, or A
+
+Context <- "VVUVV"
+
+## Make sequence context same length as the Range by adding N's
+Context <- paste(c(paste(rep("N",floor((Range-nchar(Context))/2)), collapse=""), Context, paste(rep("N",ceiling((Range-nchar(Context))/2))), collapse=""), collapse="")
+
+Context
+
+## Convert Context to R regex format
+Regex <- gsub("N", "[UCGA]", Context)
+Regex <- gsub("V", "[CGA]", Regex)
+
+## Convert to DNA
+Regex <- gsub("U", "T", Regex)
+
+## Create vector of positions for analysis
+PosVector <- c(-((Range-1)/2):((Range-1)/2))
+
+## Loop through the searching of the Context motif
+## Use parallel package to speed up the Calculations
+NumberOfCores <- 2
+
+MotifSearch <- bind_rows(mclapply(seq_along(PosVector), function(a){
+  
+  Position <- PosVector[a]
+  MaxWindow <- max(PosVector)
+  
+  ## Calculate total number of 3'-ends at (PosVector[a]) nucleotides away from center of context
+  ThreePrimeSum <- sum(uniq.DT[str_detect(substring(seq, 
+                                            (width-ExpandBy)-(a+MaxWindow),
+                                            (((width-ExpandBy)-(a+MaxWindow))+(Range-1))), Regex)][["MULT"]])
+
+  ## prepare output
+  Output <- data.table(
+               Position = Position,
+               Nucleotide = substring(Context, a, a),
+               ThreePrime = ThreePrimeSum
+               )
+  
+  return(Output)
+  }, mc.cores = NumberOfCores))
+
+
+MotifSearch[20:35]
+
+## Convert sum of 3'-ends at each position into a Z-score
+MotifSearch[["Zscore"]] <- (MotifSearch[["ThreePrime"]] - mean(MotifSearch[["ThreePrime"]])) / sd(MotifSearch[["ThreePrime"]])
+
+## Only depict central 21 nucleotides
+MotifSearchGraph <- MotifSearch[Position %in% c(-10:10)]
+
+```
+
+
+```{r Figure4 Z-score: Plot}
+## Organize data
+MotifSearchGraph[["Position"]] <- factor(MotifSearchGraph[["Position"]])
+
+## Plot the Z-score graph
+
+ZscorePlot <- ggplot() + theme_pubclean() +
+  geom_hline(yintercept = 0, linetype="dashed", color = "red", lwd = 0.3) +
+  geom_line(data=MotifSearchGraph, 
+            aes(x=Position, y=Zscore, group = 1), 
+            color = "gray60", size = 1, linetype = "longdash") +
+  geom_point(data=MotifSearchGraph, 
+             aes(x=Position, y=Zscore), 
+             shape=16, size=5, fill = "gray60", color = "black") +
+  labs(y= "3'-ends (Z-score)", x="")+
+  scale_x_discrete(labels = MotifSearchGraph[["Nucleotide"]]) +
+  theme(aspect.ratio = 0.4);ZscorePlot
+```
+
+####  
+
+
+*
+*
+* 
+
+This concludes the methods. 
+
+THE END.
+
+
+
