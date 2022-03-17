@@ -12,7 +12,7 @@ This vignette describes the computational materials & methods associated with th
 
 ####
 __About small RNA Libraries.__  
-Small RNA libraries were prepared and pre-processed as described in Genzor et.al., 2021. Please refer to the corresponding github page for more information. 
+Small RNA libraries were prepared and pre-processed as described in [**Genzor et.al., 2021**](https://genome.cshlp.org/content/31/11/2058.short). Please refer to the corresponding [**piRNA_Diversity**](https://github.com/HaaseLab/piRNA_Diversity/) github page for more information. 
 
 ####
 __Pre-requisites & Notes__  
