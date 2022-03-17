@@ -9,6 +9,10 @@
 __Authors__  
 *Daniel Stoyko, Pavol Genzor, Astrid D. Haase*  
 
+
+Further information and requests for resources should be directed to and will be fulfilled by the lead contact, Astrid D. Haase (astrid.haase@nih.gov)!
+
+
 This vignette describes the computational materials & methods associated with this manuscript. Please visit [**HaaseLab/piRNA_ThreePrimeEnds github repository**](https://github.com/HaaseLab/piRNA_ThreePrimeEnds) to download functions for the script. Please reffer to the GEO dataset [**GSE156058**](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE156058) associated with this study for adapter sequences and raw data. The analysis in this vignette was not performed with full data sets, but only subset of the data to demonstrate the materials and methods.
 
 ####
